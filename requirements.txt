@@ -1,0 +1,34 @@
+# ===== FILE: requirements.txt =====
+# Python 3.10+ required (3.11 or 3.12 recommended).
+# Lower bounds (>=) keep the install resolvable; freeze exact versions
+# with `pip freeze > requirements.lock` once the MVP works.
+# sqlite3 ships with Python's standard library — nothing to install for SQLite.
+
+# --- Config (Module 2) ---
+python-dotenv>=1.0
+pydantic>=2.6
+pydantic-settings>=2.2
+
+# --- Collectors (Modules 4-5) ---
+# arXiv (Atom API) and GitHub (REST) are consumed with requests + feedparser,
+# so no extra client libraries are needed.
+requests>=2.31
+feedparser>=6.0
+
+# --- AI (Module 8): current official Google Gemini SDK (`from google import genai`) ---
+google-genai>=1.0
+httpx>=0.27
+
+# --- Orchestration (Module 9) ---
+langgraph>=0.2
+
+# --- Resilience (Module 15): retry with backoff ---
+tenacity>=8.2
+
+# --- Scheduling (Module 17): pinned <4 because APScheduler 4.x has a different API ---
+APScheduler>=3.10,<4
+
+# --- Testing (Module 18) ---
+pytest>=8.0
+pytest-mock>=3.12
+responses>=0.25

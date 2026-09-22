@@ -1,0 +1,51 @@
+# ===== FILE: .gitignore =====
+# Rule of thumb: track source + templates; ignore secrets, state, and artifacts.
+
+# --- Secrets (NEVER commit) ---
+.env
+.env.*
+!.env.example
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+build/
+dist/
+
+# --- Tooling caches ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# --- Runtime artifacts (dirs kept via .gitkeep) ---
+data/*
+!data/.gitkeep
+logs/*
+!logs/.gitkeep
+*.db
+*.sqlite
+*.sqlite3
+
+# --- OpenWA / WhatsApp session data (contains login credentials!) ---
+openwa/
+node_modules/
+*.data.json
+session*.json
+_IGMetaData/
+.wwebjs_auth/
+.wwebjs_cache/
+chrome_data/
+qr_code*.png
+
+# --- Editors / OS ---
+.vscode/*
+!.vscode/settings.json
+.idea/
+.DS_Store
+Thumbs.db
