@@ -200,7 +200,7 @@ class GeminiService:
     def __init__(
         self,
         api_key: str,
-        model: str = "gemini-2.5-flash",
+        model: str = "gemini-3.5-flash-lite",
         *,
         max_requests_per_minute: int = 10,
         batch_size: int = 5,
