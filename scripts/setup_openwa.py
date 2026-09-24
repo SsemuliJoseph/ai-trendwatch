@@ -3,10 +3,12 @@
 FILE: scripts/setup_openwa.py
 MODULE 11 — install, start and inspect the local OpenWA WhatsApp gateway.
 
-    python scripts/setup_openwa.py up        # clone -> configure -> docker compose up -> wait until healthy
-    python scripts/setup_openwa.py status    # is the gateway answering its health check?
-    python scripts/setup_openwa.py key       # print the admin API key (needed by dashboard + our .env)
-    python scripts/setup_openwa.py down      # stop the container (pairing and data are kept)
+    python scripts/setup_openwa.py up        # start the gateway
+    python scripts/setup_openwa.py status    # gateway health check
+    python scripts/setup_openwa.py key       # print the admin key
+    python scripts/setup_openwa.py sessions  # list session UUIDs
+    python scripts/setup_openwa.py groups <SESSION_ID>  # list groups
+    python scripts/setup_openwa.py down      # stop the container
 
 ARCHITECTURE NOTES
   * This is OPERATIONS tooling, not application code, so it lives in scripts/ (outside `app/`)
@@ -23,6 +25,7 @@ ARCHITECTURE NOTES
     docker-compose.dev.yml, port 2785 bound to 127.0.0.1, container name `openwa-api`, public
     health route /api/health/ready, admin key written to data/.api-key on first start.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -32,6 +35,7 @@ import sys
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
+import uuid
 
 import requests
 
@@ -64,7 +68,9 @@ def check_prerequisites(
     if not which("git"):
         problems.append("git is not installed -> https://git-scm.com/downloads")
     if not which("docker"):
-        problems.append("Docker is not installed -> https://docs.docker.com/get-docker/")
+        problems.append(
+            "Docker is not installed -> https://docs.docker.com/get-docker/"
+        )
         return problems
 
     def ok(cmd: list[str]) -> bool:
@@ -74,9 +80,13 @@ def check_prerequisites(
             return False
 
     if not ok(["docker", "compose", "version"]):
-        problems.append("`docker compose` (v2) is not available -> update Docker Desktop / install the compose plugin")
+        problems.append(
+            "`docker compose` (v2) is not available -> update Docker Desktop / install the compose plugin"
+        )
     elif not ok(["docker", "info"]):
-        problems.append("Docker is installed but its daemon is not running -> start Docker Desktop, then retry")
+        problems.append(
+            "Docker is installed but its daemon is not running -> start Docker Desktop, then retry"
+        )
     return problems
 
 
@@ -85,7 +95,9 @@ def clone_gateway(gateway_dir: Path, run: Run = subprocess.run) -> bool:
     if (gateway_dir / COMPOSE_FILE).exists():
         return False
     if gateway_dir.exists() and any(gateway_dir.iterdir()):
-        raise SetupError(f"{gateway_dir} exists but is not an OpenWA checkout; move or delete it and retry")
+        raise SetupError(
+            f"{gateway_dir} exists but is not an OpenWA checkout; move or delete it and retry"
+        )
     run(["git", "clone", "--depth", "1", REPO_URL, str(gateway_dir)], check=True)
     return True
 
@@ -93,7 +105,12 @@ def clone_gateway(gateway_dir: Path, run: Run = subprocess.run) -> bool:
 def gateway_revision(gateway_dir: Path, run: Run = subprocess.run) -> str:
     """Short git commit of the checkout: record it so a working setup is reproducible."""
     try:
-        result = run(["git", "-C", str(gateway_dir), "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=30)
+        result = run(
+            ["git", "-C", str(gateway_dir), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
         return result.stdout.strip() or "unknown"
     except (OSError, subprocess.SubprocessError):
         return "unknown"
@@ -143,7 +160,12 @@ def read_admin_key(gateway_dir: Path, run: Run = subprocess.run) -> str | None:
     except OSError:
         pass
     try:
-        result = run(["docker", "exec", CONTAINER_NAME, "cat", "/app/data/.api-key"], capture_output=True, text=True, timeout=30)
+        result = run(
+            ["docker", "exec", CONTAINER_NAME, "cat", "/app/data/.api-key"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
     except (OSError, subprocess.SubprocessError):
         return None
     return (result.stdout.strip() or None) if result.returncode == 0 else None
@@ -156,12 +178,66 @@ NEXT_STEPS = f"""
 OpenWA is running.  Dashboard: {BASE_URL}
 
 NEXT (one time):
-  1. Get the admin key:     python scripts/setup_openwa.py key      (the dashboard asks for it)
+  1. Get the admin key:     python scripts/setup_openwa.py key
+      (the dashboard asks for it)
   2. Dashboard -> Sessions -> create a session (e.g. "trendwatch") -> Start
-  3. On the DEDICATED TEST PHONE: WhatsApp -> Settings -> Linked devices -> Link a device,
-     then scan the QR code shown in the dashboard.
-  4. Copy the session id, group id and admin key into .env (see the Module 11 notes).
+  3. On the DEDICATED TEST PHONE: WhatsApp -> Settings -> Linked devices
+      -> Link a device, then scan the QR code shown in the dashboard.
+  4. Run `python scripts/setup_openwa.py sessions` to list session UUIDs,
+      then `python scripts/setup_openwa.py groups <SESSION_ID>` to list
+      groups for one session.
+  5. Copy the session id, group id and admin key into .env
+      (see the Module 11 notes).
 """
+
+
+def _request_json(
+    path: str,
+    api_key: str,
+    *,
+    params: dict[str, object] | None = None,
+    get: Callable[..., requests.Response] = requests.get,
+) -> object:
+    try:
+        url = f"{BASE_URL}{path}"
+        response = get(
+            url,
+            headers={"X-API-Key": api_key},
+            params=params,
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        raise SetupError(f"OpenWA request failed: {exc}") from exc
+    if response.status_code != 200:
+        detail = response.text.strip().replace("\n", " ")
+        message = (
+            f"OpenWA returned HTTP {response.status_code}: "
+            f"{detail[:200] or '<empty>'}"
+        )
+        raise SetupError(message)
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise SetupError("OpenWA returned non-JSON data") from exc
+
+
+def _format_session_row(item: object) -> str:
+    if not isinstance(item, dict):
+        return f"<unexpected session payload: {item!r}>"
+    session_id = str(item.get("id", "<missing>"))
+    name = str(item.get("name") or "<unnamed>")
+    status = str(item.get("status") or "<unknown>")
+    phone = str(item.get("phone") or "")
+    return f"{session_id:<36}  {status:<12}  {name:<20}  {phone}"
+
+
+def _format_group_row(item: object) -> str:
+    if not isinstance(item, dict):
+        return f"<unexpected group payload: {item!r}>"
+    group_id = str(item.get("id", "<missing>"))
+    name = str(item.get("name") or "<unnamed>")
+    linked_parent = str(item.get("linkedParentJID") or "")
+    return f"{group_id:<36}  {name:<28}  {linked_parent}"
 
 
 def cmd_up(gateway_dir: Path) -> int:
@@ -171,14 +247,20 @@ def cmd_up(gateway_dir: Path) -> int:
         return 1
     if clone_gateway(gateway_dir):
         print(f"Cloned OpenWA into {gateway_dir}")
-    print(f"OpenWA revision: {gateway_revision(gateway_dir)}  (note it down; upgrades can change the API)")
+    print(
+        f"OpenWA revision: {gateway_revision(gateway_dir)}  (note it down; upgrades can change the API)"
+    )
     if ensure_gateway_env(gateway_dir):
         print(f"Wrote {gateway_dir / '.env'} from {ENV_TEMPLATE.name}")
-    print("Starting the gateway. The FIRST start builds the image (Chromium included): allow several minutes ...")
+    print(
+        "Starting the gateway. The FIRST start builds the image (Chromium included): allow several minutes ..."
+    )
     compose(gateway_dir, "up", "-d", "--build")
     if not wait_until_ready():
-        print(f"The gateway did not become healthy in time. Inspect:  docker compose -f {COMPOSE_FILE} logs openwa "
-              f"(run inside {gateway_dir})")
+        print(
+            f"The gateway did not become healthy in time. Inspect:  docker compose -f {COMPOSE_FILE} logs openwa "
+            f"(run inside {gateway_dir})"
+        )
         return 1
     print(NEXT_STEPS)
     return 0
@@ -189,7 +271,10 @@ def cmd_down(gateway_dir: Path) -> int:
         print("Nothing to stop: OpenWA has not been set up here.")
         return 1
     compose(gateway_dir, "down")
-    print("Gateway stopped. Your paired session and API key are kept in", gateway_dir / "data")
+    print(
+        "Gateway stopped. Your paired session and API key are kept in",
+        gateway_dir / "data",
+    )
     return 0
 
 
@@ -202,17 +287,101 @@ def cmd_status() -> int:
 def cmd_key(gateway_dir: Path) -> int:
     key = read_admin_key(gateway_dir)
     if key is None:
-        print("No admin key found. Has the gateway been started? (python scripts/setup_openwa.py up)\n"
-              f"Fallback:  docker compose -f {COMPOSE_FILE} logs openwa   (the key starts with owa_k1_)")
+        print(
+            "No admin key found. Has the gateway been started? (python scripts/setup_openwa.py up)\n"
+            f"Fallback:  docker compose -f {COMPOSE_FILE} logs openwa   (the key starts with owa_k1_)"
+        )
         return 1
     print(key)
     return 0
 
 
+def cmd_sessions(
+    gateway_dir: Path,
+    *,
+    get: Callable[..., requests.Response] = requests.get,
+) -> int:
+    key = read_admin_key(gateway_dir)
+    if key is None:
+        print(
+            "No admin key found. Has the gateway been started? (python scripts/setup_openwa.py up)\n"
+            f"Fallback:  docker compose -f {COMPOSE_FILE} logs openwa   (the key starts with owa_k1_)"
+        )
+        return 1
+    sessions = _request_json("/api/sessions", key, get=get)
+    if not isinstance(sessions, list):
+        raise SetupError("unexpected sessions payload: expected a JSON list")
+    print("SESSION ID                         STATUS  NAME          PHONE")
+    if not sessions:
+        print("<no sessions found>")
+        return 0
+    for item in sessions:
+        print(_format_session_row(item))
+    return 0
+
+
+def cmd_groups(
+    gateway_dir: Path,
+    session_id: str,
+    *,
+    get: Callable[..., requests.Response] = requests.get,
+) -> int:
+    session_id = session_id.strip()
+    try:
+        uuid.UUID(session_id)
+    except ValueError:
+        print(
+            "Error: session_id must be the UUID from "
+            "python scripts/setup_openwa.py sessions, not the dashboard name "
+            "or <SESSION_ID>"
+        )
+        return 1
+
+    key = read_admin_key(gateway_dir)
+    if key is None:
+        print(
+            "No admin key found. Has the gateway been started? "
+            "(python scripts/setup_openwa.py up)\n"
+            f"Fallback:  docker compose -f {COMPOSE_FILE} logs openwa   "
+            "(the key starts with owa_k1_)"
+        )
+        return 1
+    groups = _request_json(
+        f"/api/sessions/{session_id}/groups",
+        key,
+        params={"limit": 100, "offset": 0},
+        get=get,
+    )
+    if not isinstance(groups, list):
+        raise SetupError("unexpected groups payload: expected a JSON list")
+    print("GROUP ID                          NAME        LINKED PARENT")
+    if not groups:
+        print("<no groups found>")
+        return 0
+    for item in groups:
+        print(_format_group_row(item))
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Manage the local OpenWA WhatsApp gateway.")
-    parser.add_argument("command", choices=["up", "down", "status", "key"])
-    parser.add_argument("--dir", type=Path, default=DEFAULT_GATEWAY_DIR, help="OpenWA checkout (default: ./openwa)")
+    parser = argparse.ArgumentParser(
+        description="Manage the local OpenWA WhatsApp gateway.",
+    )
+    parser.add_argument(
+        "command",
+        choices=["up", "down", "status", "key", "sessions", "groups"],
+    )
+    parser.add_argument(
+        "--dir",
+        type=Path,
+        default=DEFAULT_GATEWAY_DIR,
+        help="OpenWA checkout (default: ./openwa)",
+    )
+    parser.add_argument(
+        "session_id",
+        nargs="?",
+        help="OpenWA session UUID (required for the groups command)",
+    )
     args = parser.parse_args(argv)
     try:
         return {
@@ -220,12 +389,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             "down": lambda: cmd_down(args.dir),
             "status": cmd_status,
             "key": lambda: cmd_key(args.dir),
+            "sessions": lambda: cmd_sessions(args.dir),
+            "groups": lambda: cmd_groups(args.dir, args.session_id or ""),
         }[args.command]()
     except SetupError as exc:
         print(f"Error: {exc}")
         return 1
     except subprocess.CalledProcessError as exc:
-        print(f"Error: command failed ({exc.returncode}): {' '.join(map(str, exc.cmd))}")
+        command_text = " ".join(map(str, exc.cmd))
+        print(f"Error: command failed ({exc.returncode}): {command_text}")
         return 1
 
 

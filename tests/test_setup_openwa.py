@@ -4,6 +4,7 @@ MODULE 11 tests — run with:  pytest tests/test_setup_openwa.py
 Docker, git and the network are all replaced by fakes: these tests check OUR logic
 (ordering, idempotency, safety), not OpenWA itself.
 """
+
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -47,12 +48,18 @@ def test_all_prerequisites_present():
 
 def test_missing_git_and_docker_are_both_reported():
     problems = s.check_prerequisites(which_only(), FakeRun())
-    assert len(problems) == 2 and any("git" in p for p in problems) and any("Docker is not installed" in p for p in problems)
+    assert (
+        len(problems) == 2
+        and any("git" in p for p in problems)
+        and any("Docker is not installed" in p for p in problems)
+    )
 
 
 def test_docker_compose_v2_missing():
     run = FakeRun({("docker", "compose", "version"): done(1)})
-    assert "docker compose" in s.check_prerequisites(which_only("git", "docker"), run)[0]
+    assert (
+        "docker compose" in s.check_prerequisites(which_only("git", "docker"), run)[0]
+    )
 
 
 def test_docker_daemon_not_running():
@@ -106,7 +113,10 @@ def test_gateway_env_is_created_once_and_never_overwritten(tmp_path):
 
 
 def test_revision_is_reported_or_unknown():
-    assert s.gateway_revision(Path("."), FakeRun({("git",): done(0, "abc1234\n")})) == "abc1234"
+    assert (
+        s.gateway_revision(Path("."), FakeRun({("git",): done(0, "abc1234\n")}))
+        == "abc1234"
+    )
     assert s.gateway_revision(Path("."), FakeRun({("git",): OSError()})) == "unknown"
 
 
@@ -135,7 +145,13 @@ class Clock:
 
 def test_wait_until_ready_polls_until_200():
     t = Clock()
-    responses = iter([SimpleNamespace(status_code=503), requests.ConnectionError("refused"), SimpleNamespace(status_code=200)])
+    responses = iter(
+        [
+            SimpleNamespace(status_code=503),
+            requests.ConnectionError("refused"),
+            SimpleNamespace(status_code=200),
+        ]
+    )
 
     def fake_get(url, timeout):
         item = next(responses)
@@ -143,20 +159,31 @@ def test_wait_until_ready_polls_until_200():
             raise item
         return item
 
-    assert s.wait_until_ready(get=fake_get, clock=t.clock, sleep=t.sleep, interval=3) is True
+    assert (
+        s.wait_until_ready(get=fake_get, clock=t.clock, sleep=t.sleep, interval=3)
+        is True
+    )
     assert t.sleeps == [3, 3]
 
 
 def test_wait_until_ready_gives_up_after_the_timeout():
     t = Clock()
-    ok = s.wait_until_ready(get=lambda url, timeout: SimpleNamespace(status_code=503), clock=t.clock, sleep=t.sleep,
-                            timeout=10, interval=4)
+    ok = s.wait_until_ready(
+        get=lambda url, timeout: SimpleNamespace(status_code=503),
+        clock=t.clock,
+        sleep=t.sleep,
+        timeout=10,
+        interval=4,
+    )
     assert ok is False and sum(t.sleeps) >= 10
 
 
 def test_wait_with_zero_timeout_makes_exactly_one_attempt():
     calls = []
-    s.wait_until_ready(get=lambda url, timeout: calls.append(url) or SimpleNamespace(status_code=500), timeout=0)
+    s.wait_until_ready(
+        get=lambda url, timeout: calls.append(url) or SimpleNamespace(status_code=500),
+        timeout=0,
+    )
     assert calls == [s.HEALTH_URL]
 
 
@@ -174,7 +201,13 @@ def test_admin_key_is_read_from_the_host_file(tmp_path):
 def test_admin_key_falls_back_to_docker_exec_when_the_file_is_unreadable(tmp_path):
     run = FakeRun({("docker", "exec"): done(0, "owa_k1_from_container\n")})
     assert s.read_admin_key(tmp_path, run) == "owa_k1_from_container"
-    assert run.calls[0][0] == ["docker", "exec", s.CONTAINER_NAME, "cat", "/app/data/.api-key"]
+    assert run.calls[0][0] == [
+        "docker",
+        "exec",
+        s.CONTAINER_NAME,
+        "cat",
+        "/app/data/.api-key",
+    ]
 
 
 @pytest.mark.parametrize("result", [done(1, ""), done(0, "  \n"), OSError("no docker")])
@@ -189,12 +222,22 @@ def test_admin_key_missing_everywhere_returns_none(tmp_path, result):
 def steps(monkeypatch, tmp_path):
     """Replace every side-effecting step with a recorder; returns the call log."""
     log = []
-    monkeypatch.setattr(s, "check_prerequisites", lambda *a, **k: log.append("prereq") or [])
-    monkeypatch.setattr(s, "clone_gateway", lambda d, *a, **k: log.append("clone") or True)
+    monkeypatch.setattr(
+        s, "check_prerequisites", lambda *a, **k: log.append("prereq") or []
+    )
+    monkeypatch.setattr(
+        s, "clone_gateway", lambda d, *a, **k: log.append("clone") or True
+    )
     monkeypatch.setattr(s, "gateway_revision", lambda *a, **k: "abc1234")
-    monkeypatch.setattr(s, "ensure_gateway_env", lambda *a, **k: log.append("env") or True)
-    monkeypatch.setattr(s, "compose", lambda d, *args, **k: log.append("compose " + " ".join(args)))
-    monkeypatch.setattr(s, "wait_until_ready", lambda *a, **k: log.append("wait") or True)
+    monkeypatch.setattr(
+        s, "ensure_gateway_env", lambda *a, **k: log.append("env") or True
+    )
+    monkeypatch.setattr(
+        s, "compose", lambda d, *args, **k: log.append("compose " + " ".join(args))
+    )
+    monkeypatch.setattr(
+        s, "wait_until_ready", lambda *a, **k: log.append("wait") or True
+    )
     return log
 
 
@@ -202,23 +245,33 @@ def test_up_runs_the_steps_in_order(steps, tmp_path, capsys):
     assert s.cmd_up(tmp_path / "openwa") == 0
     assert steps == ["prereq", "clone", "env", "compose up -d --build", "wait"]
     out = capsys.readouterr().out
-    assert "abc1234" in out and "Linked devices" in out and "DEDICATED TEST PHONE" in out
+    assert (
+        "abc1234" in out and "Linked devices" in out and "DEDICATED TEST PHONE" in out
+    )
 
 
-def test_up_stops_before_touching_anything_when_prerequisites_fail(steps, monkeypatch, tmp_path, capsys):
-    monkeypatch.setattr(s, "check_prerequisites", lambda *a, **k: ["Docker is not installed"])
+def test_up_stops_before_touching_anything_when_prerequisites_fail(
+    steps, monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setattr(
+        s, "check_prerequisites", lambda *a, **k: ["Docker is not installed"]
+    )
     assert s.cmd_up(tmp_path / "openwa") == 1
     assert steps == []
     assert "Docker is not installed" in capsys.readouterr().out
 
 
-def test_up_reports_failure_and_a_log_hint_when_the_gateway_never_gets_healthy(steps, monkeypatch, tmp_path, capsys):
+def test_up_reports_failure_and_a_log_hint_when_the_gateway_never_gets_healthy(
+    steps, monkeypatch, tmp_path, capsys
+):
     monkeypatch.setattr(s, "wait_until_ready", lambda *a, **k: False)
     assert s.cmd_up(tmp_path / "openwa") == 1
     assert "logs openwa" in capsys.readouterr().out
 
 
-def test_main_turns_a_failing_subprocess_into_a_message_not_a_traceback(monkeypatch, capsys):
+def test_main_turns_a_failing_subprocess_into_a_message_not_a_traceback(
+    monkeypatch, capsys
+):
     def boom(*a, **k):
         raise subprocess.CalledProcessError(128, ["git", "clone"])
 
@@ -238,10 +291,88 @@ def test_key_command_prints_only_the_key(tmp_path, monkeypatch, capsys):
     assert capsys.readouterr().out.strip() == "owa_k1_abc"
 
 
-def test_key_command_explains_the_fallback_when_no_key_exists(tmp_path, monkeypatch, capsys):
+def test_key_command_explains_the_fallback_when_no_key_exists(
+    tmp_path, monkeypatch, capsys
+):
     monkeypatch.setattr(s, "read_admin_key", lambda *a, **k: None)
     assert s.cmd_key(tmp_path) == 1
     assert "owa_k1_" in capsys.readouterr().out
+
+
+def test_sessions_command_lists_the_session_rows(tmp_path, monkeypatch, capsys):
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / ".api-key").write_text("owa_k1_secret\n")
+
+    def fake_get(url, headers, params, timeout):
+        assert url == f"{s.BASE_URL}/api/sessions"
+        assert headers["X-API-Key"] == "owa_k1_secret"
+        return SimpleNamespace(
+            status_code=200,
+            json=lambda: [
+                {
+                    "id": "8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a",
+                    "status": "ready",
+                    "name": "trendwatch",
+                    "phone": "256703201565",
+                }
+            ],
+            text="[]",
+        )
+
+    assert s.cmd_sessions(tmp_path, get=fake_get) == 0
+    out = capsys.readouterr().out
+    assert "SESSION ID" in out and "trendwatch" in out and "ready" in out
+
+
+def test_groups_command_rejects_a_non_uuid_session_id(tmp_path, capsys):
+    assert s.cmd_groups(tmp_path, "<SESSION_ID>") == 1
+    assert "must be the UUID" in capsys.readouterr().out
+
+
+def test_groups_command_lists_the_group_rows(tmp_path, monkeypatch, capsys):
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / ".api-key").write_text("owa_k1_secret\n")
+    monkeypatch.setattr(s, "read_admin_key", lambda *a, **k: "owa_k1_secret")
+
+    def fake_get(url, headers, params, timeout):
+        assert (
+            url
+            == f"{s.BASE_URL}/api/sessions/8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a/groups"
+        )
+        assert params == {"limit": 100, "offset": 0}
+        return SimpleNamespace(
+            status_code=200,
+            json=lambda: [
+                {
+                    "id": "120363000000000000@g.us",
+                    "name": "trendwatch",
+                    "linkedParentJID": None,
+                }
+            ],
+            text="[]",
+        )
+
+    assert (
+        s.cmd_groups(tmp_path, "8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a", get=fake_get)
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert (
+        "GROUP ID" in out and "120363000000000000@g.us" in out and "trendwatch" in out
+    )
+
+
+def test_main_routes_groups_to_the_session_specific_command(monkeypatch):
+    seen = {}
+
+    def fake_cmd_groups(gateway_dir, session_id, **kwargs):
+        seen["gateway_dir"] = gateway_dir
+        seen["session_id"] = session_id
+        return 0
+
+    monkeypatch.setattr(s, "cmd_groups", fake_cmd_groups)
+    assert s.main(["groups", "8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a"]) == 0
+    assert seen["session_id"] == "8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a"
 
 
 # =====================================================================
@@ -249,7 +380,11 @@ def test_key_command_explains_the_fallback_when_no_key_exists(tmp_path, monkeypa
 # =====================================================================
 def active_settings() -> dict[str, str]:
     lines = s.ENV_TEMPLATE.read_text(encoding="utf-8").splitlines()
-    pairs = (line.split("=", 1) for line in lines if line.strip() and not line.lstrip().startswith("#"))
+    pairs = (
+        line.split("=", 1)
+        for line in lines
+        if line.strip() and not line.lstrip().startswith("#")
+    )
     return {k.strip(): v.strip() for k, v in pairs}
 
 
