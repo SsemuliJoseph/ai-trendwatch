@@ -57,6 +57,12 @@ class FakeClient:
         self.sent.append((chat_id, text))
         return SendResult(message_id="gw-123")
 
+    def send_image(self, chat_id, image, mimetype, caption):
+        if self.send_error:
+            raise self.send_error
+        self.images = getattr(self, "images", []) + [(chat_id, mimetype, len(image), caption)]
+        return SendResult(message_id="gw-img-1")
+
 
 def run(args=(), *, settings=None, client=None, answer="SEND", tty=True, tmp_path=None, now=NOW):
     """Invoke main() with everything injected. Returns (exit_code, client)."""
@@ -87,8 +93,8 @@ def run(args=(), *, settings=None, client=None, answer="SEND", tty=True, tmp_pat
 # =====================================================================
 def test_test_message_is_labelled_and_produced_by_the_production_formatter():
     text = dt.build_test_message(NOW).text
-    assert "[TEST]" in text and text.startswith("📰 *")  # same layout as real items
-    assert "19 Sep 2026" in text and "https://example.com/" in text
+    assert "*[TEST] AI TrendWatch delivery check*" in text and text.startswith("📰 *")  # same layout as real items
+    assert "19 Sep" in text and "https://example.com/" in text  # old date -> absolute date, not "Today"
 
 
 def test_missing_live_config_lists_every_gap():
@@ -252,3 +258,16 @@ def test_scripts_run_as_plain_files_from_any_directory(script, tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert "usage:" in result.stdout
+
+
+def test_image_flag_sends_one_picture_with_the_production_caption(tmp_path):
+    code, client = run(["--send", "--image"], tmp_path=tmp_path)
+    assert code == dt.EXIT_OK and client.sent == []  # no separate text message
+    (chat, mimetype, size, caption), = client.images
+    assert (chat, mimetype) == (GROUP, "image/png") and size > 1000
+    assert caption == dt.build_test_message(NOW).text  # same layout as real items
+
+
+def test_image_flag_is_ignored_in_rehearsal(tmp_path):
+    code, client = run(["--image"], tmp_path=tmp_path)
+    assert code == dt.EXIT_OK and client.sent == [] and not getattr(client, "images", [])

@@ -87,6 +87,7 @@ class Settings(BaseSettings):
     whatsapp_dry_run: bool = True  # SAFE DEFAULT: never send until explicitly disabled
     max_messages_per_run: int = Field(default=5, ge=1, le=20)
     message_delay_seconds: int = Field(default=8, ge=1, le=300)
+    message_images: bool = True  # each message opens with a picture (the article's own, else a generated title card)
 
     # ---- Pipeline policy (Module 9) ----
     min_relevance_score: int = Field(default=6, ge=0, le=10)  # only items scoring >= this may be delivered

@@ -136,7 +136,7 @@ def test_the_display_timezone_reaches_the_formatter(repo):
         gateway=gateway, chat_id=GROUP, display_tz=timezone(timedelta(hours=3)),
     )
     run_once(d)
-    assert "20 Sep 2026" in gateway.sent[0][1]  # 22:30 UTC is already the 20th in East Africa Time
+    assert "20 Sep" in gateway.sent[0][1] and "19 Sep" not in gateway.sent[0][1]  # 22:30 UTC is already the 20th in EAT (year omitted for same-year dates)
 
 
 # =====================================================================

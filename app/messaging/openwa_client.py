@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import logging
 import random
+import base64
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -51,6 +52,9 @@ logger = logging.getLogger(__name__)
 
 GROUP_SUFFIX = "@g.us"
 MAX_TEXT_CHARS = 4000  # far above what the formatter emits (~1.2k); a guard against runaway text
+MAX_CAPTION_CHARS = 1000  # OpenWA's image-caption limit is 1024; stay a little under it
+MAX_IMAGE_BYTES = 5_000_000  # same cap the image fetcher enforces; a guard against runaway uploads
+IMAGE_MIMETYPES = ("image/jpeg", "image/png", "image/webp")
 USER_AGENT = "AI-TrendWatch/0.1 (academic project; OpenWA client)"
 
 
@@ -115,6 +119,21 @@ class Gateway(Protocol):
     def ensure_ready(self) -> None: ...
 
     def send_text(self, chat_id: str, text: str) -> SendResult: ...
+
+    def send_image(self, chat_id: str, image: bytes, mimetype: str, caption: str) -> SendResult: ...
+
+
+def validate_image(image: bytes, mimetype: str, caption: str) -> None:
+    """Image-specific rules every gateway applies (ValueError = caller bug). The caption is checked for
+    group/empty/length by `validate_outbound` as well; this adds the media rules."""
+    if mimetype not in IMAGE_MIMETYPES:
+        raise ValueError(f"unsupported image type {mimetype!r}; allowed: {', '.join(IMAGE_MIMETYPES)}")
+    if not image:
+        raise ValueError("refusing to send an empty image")
+    if len(image) > MAX_IMAGE_BYTES:
+        raise ValueError(f"image is {len(image)} bytes; the limit is {MAX_IMAGE_BYTES}")
+    if len(caption) > MAX_CAPTION_CHARS:
+        raise ValueError(f"caption is {len(caption)} chars; the limit is {MAX_CAPTION_CHARS}")
 
 
 def validate_outbound(chat_id: str, text: str) -> None:
@@ -199,6 +218,24 @@ class OpenWAClient:
     # ---- sending ----
     def send_text(self, chat_id: str, text: str) -> SendResult:
         validate_outbound(chat_id, text)
+        response = self._dispatch(f"{self._session_path}/messages/send-text", {"chatId": chat_id, "text": text})
+        message_id = _extract_message_id(response)
+        logger.info("sent %d chars to %s (gateway id: %s)", len(text), chat_id, message_id or "n/a")
+        return SendResult(message_id=message_id)
+
+    def send_image(self, chat_id: str, image: bytes, mimetype: str, caption: str) -> SendResult:
+        """ONE message: the picture with the text as its caption. Counts as one send for pacing and the run cap."""
+        validate_outbound(chat_id, caption)
+        validate_image(image, mimetype, caption)
+        body = {"chatId": chat_id, "base64": base64.b64encode(image).decode("ascii"), "mimetype": mimetype, "caption": caption}
+        response = self._dispatch(f"{self._session_path}/messages/send-image", body)
+        message_id = _extract_message_id(response)
+        logger.info("sent image (%d bytes) + %d-char caption to %s (gateway id: %s)",
+                    len(image), len(caption), chat_id, message_id or "n/a")
+        return SendResult(message_id=message_id)
+
+    def _dispatch(self, path: str, body: dict) -> requests.Response:
+        """The single guarded send path (run cap -> pacing -> request) shared by text and image sends."""
         if self._max_sends is not None and self._sends >= self._max_sends:
             raise OpenWASendLimitError(f"send limit of {self._max_sends} reached for this run")
 
@@ -206,17 +243,11 @@ class OpenWAClient:
         self._sends += 1  # attempts count: a failed attempt may still have reached WhatsApp
         self._last_send = self._clock()
         try:
-            response = self._request(
-                "POST", f"{self._session_path}/messages/send-text", json_body={"chatId": chat_id, "text": text},
-                is_send=True,
-            )
+            return self._request("POST", path, json_body=body, is_send=True)
         except OpenWARejectedError as exc:
             if exc.status_code == 400:  # an UNSTARTED session also answers 400 -> tell the two apart
                 self.ensure_ready()
             raise
-        message_id = _extract_message_id(response)
-        logger.info("sent %d chars to %s (gateway id: %s)", len(text), chat_id, message_id or "n/a")
-        return SendResult(message_id=message_id)
 
     # ---- internals ----
     def _pace(self) -> None:
@@ -296,7 +327,8 @@ class DryRunClient:
 
     def __init__(self, max_sends: int | None = None) -> None:
         self._max_sends = max_sends
-        self.sent: list[tuple[str, str]] = []  # (chat_id, text)
+        self.sent: list[tuple[str, str]] = []  # (chat_id, text or image caption)
+        self.images: list[tuple[str, str, int]] = []  # (chat_id, mimetype, bytes) for the sends that carried a picture
 
     def ensure_ready(self) -> None:
         return None  # nothing to link in a dry run
@@ -307,6 +339,16 @@ class DryRunClient:
             raise OpenWASendLimitError(f"send limit of {self._max_sends} reached for this run")
         self.sent.append((chat_id, text))
         logger.info("[dry-run] would send %d chars to %s", len(text), chat_id)
+        return SendResult(message_id=f"dry-run-{len(self.sent)}", dry_run=True)
+
+    def send_image(self, chat_id: str, image: bytes, mimetype: str, caption: str) -> SendResult:
+        validate_outbound(chat_id, caption)
+        validate_image(image, mimetype, caption)
+        if self._max_sends is not None and len(self.sent) >= self._max_sends:
+            raise OpenWASendLimitError(f"send limit of {self._max_sends} reached for this run")
+        self.sent.append((chat_id, caption))
+        self.images.append((chat_id, mimetype, len(image)))
+        logger.info("[dry-run] would send a %s image (%d bytes) + %d-char caption to %s", mimetype, len(image), len(caption), chat_id)
         return SendResult(message_id=f"dry-run-{len(self.sent)}", dry_run=True)
 
 

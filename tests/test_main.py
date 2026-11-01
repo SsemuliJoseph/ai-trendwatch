@@ -28,7 +28,8 @@ def clean_environment(monkeypatch):
 
 def settings_for(tmp_path, **kw) -> Settings:
     # log_dir is ALWAYS redirected into tmp_path: a test run must never write into the real logs/ folder
-    fields = dict(database_path=tmp_path / "data" / "t.db", gemini_api_key="AIzaSyREALKEY", log_dir=tmp_path / "logs")
+    fields = dict(database_path=tmp_path / "data" / "t.db", gemini_api_key="AIzaSyREALKEY", log_dir=tmp_path / "logs",
+                  message_images=False)  # tests must never fetch real article pages
     return Settings(_env_file=None, **{**fields, **kw})
 
 

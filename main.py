@@ -32,7 +32,7 @@ import argparse
 import logging
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from app.agents.workflow import Analyzer, Collector, TrendState, WorkflowConfig, WorkflowDeps, run_once
@@ -41,7 +41,10 @@ from app.collectors.arxiv import ArxivCollector
 from app.collectors.rss import RSSCollector
 from app.config.settings import ConfigError, Settings, get_settings
 from app.database.repository import TrendRepository
+from app.media import Image
+from app.media.provider import ImageProvider
 from app.messaging.openwa_client import DryRunClient, Gateway, build_gateway
+from app.models import TrendItem
 from app.utils.logging_setup import configure_logging, redact
 from app.utils.retry import RetryPolicy
 from app.utils.runlock import RunLock, RunLockError
@@ -60,6 +63,7 @@ def build_deps(
     collectors: Sequence[Collector] | None = None,
     analyzer: Analyzer | None = None,
     gateway: Gateway | None = None,
+    image_provider: Callable[[TrendItem], Image | None] | None = None,
 ) -> WorkflowDeps:
     """Assemble the real object graph. Every argument can be overridden (that is how tests inject fakes)."""
     retry = RetryPolicy(max_attempts=settings.retry_max_attempts, base_delay=settings.retry_base_delay_seconds)
@@ -87,6 +91,8 @@ def build_deps(
         ]
     if repository is None:
         repository = TrendRepository(settings.database_path)
+    if image_provider is None and settings.message_images:
+        image_provider = ImageProvider()  # article preview image -> generated card -> (never raises)
 
     return WorkflowDeps(
         collectors=collectors,
@@ -95,6 +101,7 @@ def build_deps(
         config=WorkflowConfig.from_settings(settings),
         gateway=gateway,
         chat_id=chat_id,
+        image_provider=image_provider,
     )
 
 

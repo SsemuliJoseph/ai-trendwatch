@@ -29,6 +29,10 @@ SQLite (ANALYZED -> SENDING, one atomic UPDATE). Two consequences:
     SENDING next run and `select` turns it into REJECTED ("interrupted, not re-sent"): a missed item
     is preferred to a duplicate post. Fresh claims (< 10 min) are left alone: they may be live.
 
+IMAGES (optional): when `deps.image_provider` is set, each message goes out as ONE image + caption (same single
+send, same pacing, same claim/record steps). The provider never raises; no image, a too-long caption, or a
+gateway that REFUSES the picture (4xx: nothing was posted) -> the same text is sent as a plain message instead.
+
 DELIVERY POLICY (the `deliver` node; the adapter classifies errors, this node decides what to do):
     success (real)         -> mark_sent, continue
     success (DRY RUN)      -> no claim, no mark: a preview must not consume the queue, otherwise
@@ -44,7 +48,7 @@ DELIVERY POLICY (the `deliver` node; the adapter classifies errors, this node de
 """
 import logging
 import operator
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, tzinfo
 from typing import Annotated, Protocol, TypedDict
@@ -54,13 +58,16 @@ from langgraph.graph import END, START, StateGraph
 from app.ai.gemini_service import AnalysisRun
 from app.config.settings import Settings
 from app.database.repository import ItemStatus, TrendRepository
+from app.media import Image
 from app.messaging.formatter import format_item
 from app.messaging.openwa_client import (
     Gateway,
+    MAX_CAPTION_CHARS,
     OpenWADeliveryUnknownError,
     OpenWAError,
     OpenWAFatalError,
     OpenWARejectedError,
+    SendResult,
 )
 from app.models import TrendItem
 from app.processing.deduplication import Deduplicator
@@ -116,6 +123,7 @@ class WorkflowDeps:
     gateway: Gateway | None = None  # None -> the pipeline stops after `select` (no delivery stage)
     chat_id: str = ""  # destination group (ignored when gateway is None)
     display_tz: tzinfo = timezone.utc  # timezone for the date shown in messages
+    image_provider: Callable[[TrendItem], Image | None] | None = None  # None -> text-only messages
 
 
 # ----------------------------------------------------------------------
@@ -260,7 +268,7 @@ class TrendNodes:
             audit.info("%s item=%s chat=%s title=%r", "preview" if rehearsal else "attempt",
                        item.id, self._deps.chat_id, item.title[:80])
             try:
-                result = gateway.send_text(self._deps.chat_id, message.text)
+                result = self._send(gateway, item, message.text)
             except OpenWAFatalError as exc:
                 self._release(item, claimed)
                 audit.info("released item=%s reason=%s (nothing was sent)", item.id, type(exc).__name__)
@@ -313,6 +321,28 @@ class TrendNodes:
 
         logger.info("deliver: %s", metrics)
         return {"errors": errors, "metrics": metrics}
+
+    def _send(self, gateway: Gateway, item: TrendItem, text: str) -> SendResult:
+        """ONE send per item: picture + caption when we have a picture, else plain text."""
+        image = self._image_for(item, text)
+        if image is not None:
+            try:
+                return gateway.send_image(self._deps.chat_id, image.data, image.mimetype, text)
+            except OpenWARejectedError as exc:
+                # A 4xx means the gateway REFUSED the picture, so nothing was posted: sending the same story as
+                # plain text is safe (no duplicate) and better than losing the item.
+                audit.info("image rejected item=%s (%s); sending text only", item.id, exc)
+        return gateway.send_text(self._deps.chat_id, text)
+
+    def _image_for(self, item: TrendItem, text: str) -> Image | None:
+        provider = self._deps.image_provider
+        if provider is None or len(text) > MAX_CAPTION_CHARS:  # an over-long caption would be refused anyway
+            return None
+        try:
+            return provider(item)
+        except Exception as exc:  # the provider should never raise; if it does, the story still goes out
+            logger.warning("image provider failed for %s (%s: %s); sending text only", item.id, type(exc).__name__, exc)
+            return None
 
     def _release(self, item: TrendItem, claimed: bool) -> None:
         if claimed:

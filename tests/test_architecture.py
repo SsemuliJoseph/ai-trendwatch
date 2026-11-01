@@ -24,6 +24,7 @@ ALLOWED: dict[str, set[str] | None] = {
     "processing": {"models", "database"},
     "ai": {"models", "config", "utils"},
     "messaging": {"models", "config", "utils"},
+    "media": {"models"},  # turns a TrendItem into image bytes; knows nothing of WhatsApp, Gemini or SQLite
     "agents": None,
 }
 

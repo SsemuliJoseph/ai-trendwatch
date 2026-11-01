@@ -47,6 +47,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from app.config.settings import PROJECT_ROOT, ConfigError, Settings, get_settings  # noqa: E402
+from app.media.card import render_card
 from app.messaging.formatter import FormattedMessage, format_item
 from app.messaging.openwa_client import (
     OpenWAAuthError,
@@ -77,9 +78,8 @@ class Check:
 # ----------------------------------------------------------------------
 # Building blocks
 # ----------------------------------------------------------------------
-def build_test_message(now: datetime | None = None) -> FormattedMessage:
-    """A clearly labelled test, produced by the production formatter."""
-    item = TrendItem(
+def build_test_item(now: datetime | None = None) -> TrendItem:
+    return TrendItem(
         title="[TEST] AI TrendWatch delivery check",
         url="https://example.com/ai-trendwatch-delivery-test",
         source_name="AI TrendWatch",
@@ -88,9 +88,13 @@ def build_test_message(now: datetime | None = None) -> FormattedMessage:
     ).with_analysis(
         10,
         "One-off test message from the AI TrendWatch class project to confirm delivery works. "
-        "No action needed; regular updates start only after this test.",
+        "No action needed\nRegular updates start only after this test\nThis is what a normal story will look like",
     )
-    return format_item(item)
+
+
+def build_test_message(now: datetime | None = None) -> FormattedMessage:
+    """A clearly labelled test, produced by the production formatter."""
+    return format_item(build_test_item(now))
 
 
 def api_key_is_set(settings: Settings) -> bool:
@@ -182,6 +186,8 @@ def main(
 ) -> int:
     parser = argparse.ArgumentParser(description="Rehearse (default) or perform ONE controlled WhatsApp test send.")
     parser.add_argument("--send", action="store_true", help="really send one test message (asks for confirmation)")
+    parser.add_argument("--image", action="store_true",
+                        help="send the test message as a picture + caption (proves image sending works on this setup)")
     args = parser.parse_args(argv)
 
     try:
@@ -237,7 +243,11 @@ def main(
         return EXIT_ABORTED
 
     try:
-        result: SendResult = client.send_text(settings.whatsapp_group_id, message.text)
+        if args.image:  # one message: a generated title card with the text as its caption
+            card = render_card(build_test_item(now_fn()))
+            result: SendResult = client.send_image(settings.whatsapp_group_id, card.data, card.mimetype, message.text)
+        else:
+            result = client.send_text(settings.whatsapp_group_id, message.text)
     except OpenWAError as exc:
         print(f"\nSEND FAILED ({type(exc).__name__}): {exc}\n{guidance_for(exc)}")
         if isinstance(exc, OpenWADeliveryUnknownError):
@@ -247,7 +257,8 @@ def main(
     record_test_send(state_path, now_fn())
     print(f"\nSent. Gateway message id: {result.message_id or 'n/a'}")
     print("NOW CHECK THE GROUP on the test phone: the message should appear once, with a bold title,\n"
-          "emoji and a link line. Keep WHATSAPP_DRY_RUN=true until you are happy with that.")
+          "bullets and a link line" + (", under a picture" if args.image else "") + ". Keep WHATSAPP_DRY_RUN=true "
+          "until you are happy with that.")
     return EXIT_OK
 
 

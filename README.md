@@ -6,7 +6,7 @@ Agent-based real-time AI & technology update system (academic project).
 RSS/APIs → collect → validate → dedup (SQLite) → LangGraph → Gemini → format → OpenWA → WhatsApp group
 ```
 
-## Stack (100% free tier)
+## Stack 
 Python · Google Gemini API (free tier) · LangGraph · SQLite · RSS/arXiv/GitHub · OpenWA (local) · Git
 
 ## Layout

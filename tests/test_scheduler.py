@@ -9,7 +9,7 @@ import signal
 import pytest
 
 import main as runner
-from app.config.settings import Settings
+from app.config.settings import ConfigError, Settings
 from scripts import scheduler as sched
 
 
@@ -158,11 +158,13 @@ def test_once_with_a_crashing_run_fn_still_exits_cleanly_with_a_readable_code(tm
 # =====================================================================
 # CLI: configuration and validation
 # =====================================================================
-def test_a_missing_gemini_key_is_a_configuration_error(tmp_path, capsys):
-    code = sched.main(["--once"], settings=settings_for(tmp_path, gemini_api_key=""))
-    assert code == runner.EXIT_CONFIG
-    # build_scheduler is never reached with an invalid settings object in the real CLI path (get_settings()
-    # itself would have raised); here we exercise the --interval validation, which happens before building.
+def test_a_missing_gemini_key_is_a_configuration_error(tmp_path):
+    # The check lives in build_deps (the composition root every tick goes through). This used to call
+    # `sched.main(["--once"])` with NO run_fn, which executes runner.main() -> get_settings() -> the developer's
+    # REAL .env: a full live pipeline (real Gemini calls, real WhatsApp delivery) inside a unit test.
+    # Rule for this file: any call that can reach a tick must inject `run_fn`.
+    with pytest.raises(ConfigError, match="GEMINI_API_KEY"):
+        runner.build_deps(settings_for(tmp_path, gemini_api_key=""))
 
 
 def test_negative_interval_flag_is_rejected_before_anything_is_built(tmp_path, capsys):
